@@ -3,7 +3,7 @@ layout: default
 title: Документация
 ---
 
-# Документация Unlimited-Parts
+# Документация software-engineering
 
 Добро пожаловать на сайт документации проекта.
 
