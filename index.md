@@ -10,4 +10,4 @@ title: Документация
 ## Разделы
 
 - [Наша команда](Our-team.html)
-- [Предстоящие события](docs/Upcoming-events/index.html)
+- [Предстоящие события](Upcoming-events/index.html)
