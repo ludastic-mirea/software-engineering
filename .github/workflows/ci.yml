@@ -1,0 +1,186 @@
+name: "Lab 4.1 - ASP.NET CI"
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: PartsUnlimited-aspnet45
+  BUILD_CONFIGURATION: Release
+
+jobs:
+  build-and-test:
+    name: Build and test Parts Unlimited
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v3
+        with:
+          nuget-version: "6.x"
+
+      - name: Restore application packages
+        run: |
+          $configs = @(
+            "$env:APP_DIR\src\PartsUnlimitedWebsite\packages.config",
+            "$env:APP_DIR\test\PartsUnlimited.UnitTests\packages.config"
+          )
+
+          foreach ($config in $configs) {
+            nuget restore $config `
+              -PackagesDirectory "$env:APP_DIR\packages" `
+              -Source "https://api.nuget.org/v3/index.json" `
+              -NonInteractive
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+
+      - name: Prepare .NET Framework reference assemblies
+        run: |
+          $packageDir = "$env:RUNNER_TEMP\netfx-packages"
+          $referenceRoot = "$env:RUNNER_TEMP\netfx-reference"
+
+          New-Item -ItemType Directory -Force `
+            "$referenceRoot\.NETFramework" | Out-Null
+
+          foreach ($version in @("4.5.1", "4.5.2")) {
+            $suffix = $version.Replace(".", "")
+            $package = "Microsoft.NETFramework.ReferenceAssemblies.net$suffix"
+
+            nuget install $package `
+              -Version 1.0.3 `
+              -OutputDirectory $packageDir `
+              -ExcludeVersion `
+              -Source "https://api.nuget.org/v3/index.json" `
+              -NonInteractive
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            Copy-Item `
+              "$packageDir\$package\build\.NETFramework\v$version" `
+              "$referenceRoot\.NETFramework" `
+              -Recurse -Force
+          }
+
+          "NETFX_REFERENCE_ROOT=$referenceRoot" >> $env:GITHUB_ENV
+
+      - name: Build application and unit tests
+        run: |
+          msbuild "$env:APP_DIR\test\PartsUnlimited.UnitTests\PartsUnlimited.UnitTests.csproj" `
+            /m `
+            /p:Configuration=$env:BUILD_CONFIGURATION `
+            /p:Platform=AnyCPU `
+            "/p:TargetFrameworkRootPath=$env:NETFX_REFERENCE_ROOT" `
+            /verbosity:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Run unit tests
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          $vstest = Join-Path $vsPath `
+            "Common7\IDE\CommonExtensions\Microsoft\TestWindow\vstest.console.exe"
+
+          if (!(Test-Path $vstest)) {
+            throw "VSTest executable was not found."
+          }
+
+          $testDll = "$env:APP_DIR\test\PartsUnlimited.UnitTests\bin\$env:BUILD_CONFIGURATION\PartsUnlimited.UnitTests.dll"
+
+          if (!(Test-Path $testDll)) {
+            throw "Unit test assembly was not found."
+          }
+
+          $adapter = Get-ChildItem "$env:APP_DIR\packages\MSTest.TestAdapter.*" `
+            -Recurse -Filter "*TestAdapter.dll" |
+            Select-Object -First 1
+
+          if (!$adapter) {
+            throw "MSTest adapter was not found."
+          }
+
+          & $vstest $testDll `
+            "/TestAdapterPath:$($adapter.DirectoryName)" `
+            "/Logger:trx;LogFileName=unit-tests.trx" `
+            "/ResultsDirectory:$env:GITHUB_WORKSPACE\TestResults"
+
+          $testExitCode = $LASTEXITCODE
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+          [xml]$report = Get-Content "TestResults\unit-tests.trx"
+          $executed = [int]$report.TestRun.ResultSummary.Counters.executed
+
+          if ($executed -eq 0) {
+            throw "No tests were executed."
+          }
+
+          "Executed unit tests: $executed" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Package ASP.NET application
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+
+          msbuild "$env:APP_DIR\src\PartsUnlimitedWebsite\PartsUnlimitedWebsite.csproj" `
+            /m `
+            /p:Configuration=$env:BUILD_CONFIGURATION `
+            /p:Platform=AnyCPU `
+            "/p:TargetFrameworkRootPath=$env:NETFX_REFERENCE_ROOT" `
+            /p:DeployOnBuild=true `
+            /p:WebPublishMethod=Package `
+            /p:PackageAsSingleFile=true `
+            "/p:PackageLocation=$env:GITHUB_WORKSPACE\artifacts\PartsUnlimited.zip" `
+            /verbosity:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          if (!(Test-Path "artifacts\PartsUnlimited.zip")) {
+            throw "Application package was not created."
+          }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ github.run_number }}
+          path: TestResults/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload application package
+        uses: actions/upload-artifact@v7
+        with:
+          name: partsunlimited-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
