@@ -1,0 +1,38 @@
+name: "Lab 4.0 - Runner check"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-runner:
+    name: Check runner
+    runs-on: [self-hosted, Windows, X64, software-engineering]
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Show runner information
+        run: |
+          echo Runner name: %RUNNER_NAME%
+          echo Runner OS: %RUNNER_OS%
+          echo Runner architecture: %RUNNER_ARCH%
+          hostname
+          whoami
+          ver
+
+      - name: Check workspace
+        run: |
+          echo Workspace: %GITHUB_WORKSPACE%
+          cd
+          dir
+
+      - name: Check command execution
+        run: |
+          echo Runner check passed > runner-check.txt
+          type runner-check.txt
